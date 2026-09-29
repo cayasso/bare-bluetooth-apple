@@ -14,13 +14,11 @@ struct bare_bluetooth_apple_external_t {
 };
 
 struct bare_bluetooth_apple_peripheral_services_discover_t {
-  uint32_t count;
   std::optional<std::string> error;
 };
 
 struct bare_bluetooth_apple_peripheral_characteristics_discover_t {
   CFTypeRef service;
-  uint32_t count;
   std::optional<std::string> error;
 };
 
@@ -188,7 +186,6 @@ struct bare_bluetooth_apple_l2cap_error_t {
 - (void)peripheral:(CBPeripheral *)p didDiscoverServices:(NSError *)error {
   auto event = new bare_bluetooth_apple_peripheral_services_discover_t;
   if (!event) abort();
-  event->count = error ? 0 : static_cast<uint32_t>(p.services.count);
   if (error) event->error = error.localizedDescription.UTF8String;
 
   int err = js_call_threadsafe_function(tsfn_services_discover, event, js_threadsafe_function_nonblocking);
@@ -202,7 +199,6 @@ struct bare_bluetooth_apple_l2cap_error_t {
   if (!event) abort();
 
   event->service = CFBridgingRetain(service);
-  event->count = error ? 0 : static_cast<uint32_t>(service.characteristics.count);
   if (error) event->error = error.localizedDescription.UTF8String;
 
   int err = js_call_threadsafe_function(tsfn_characteristics_discover, event, js_threadsafe_function_nonblocking);
@@ -354,13 +350,33 @@ struct bare_bluetooth_apple_peripheral_t {
   BareBluetoothApplePeripheral *handle;
 };
 
-using bare_bluetooth_apple_peripheral__on_services_discover_fn = js_function_t<void, js_receiver_t, uint32_t, std::optional<std::string>>;
-using bare_bluetooth_apple_peripheral__on_characteristics_discover_fn = js_function_t<void, js_receiver_t, js_object_t, uint32_t, std::optional<std::string>>;
+using bare_bluetooth_apple_peripheral__on_services_discover_fn = js_function_t<void, js_receiver_t, js_array_t, std::optional<std::string>>;
+using bare_bluetooth_apple_peripheral__on_characteristics_discover_fn = js_function_t<void, js_receiver_t, js_object_t, js_array_t, std::optional<std::string>>;
 using bare_bluetooth_apple_peripheral__on_read_fn = js_function_t<void, js_receiver_t, js_object_t, std::string, js_object_t, std::optional<std::string>>;
 using bare_bluetooth_apple_peripheral__on_write_fn = js_function_t<void, js_receiver_t, js_object_t, std::string, std::optional<std::string>>;
 using bare_bluetooth_apple_peripheral__on_notify_fn = js_function_t<void, js_receiver_t, js_object_t, std::string, js_object_t, std::optional<std::string>>;
 using bare_bluetooth_apple_peripheral__on_notify_state_fn = js_function_t<void, js_receiver_t, js_object_t, std::string, bool, std::optional<std::string>>;
 using bare_bluetooth_apple_peripheral__on_channel_open_fn = js_function_t<void, js_receiver_t, js_object_t, std::optional<std::string>>;
+
+static js_value_t *
+bare_bluetooth_apple__bridged_array(js_env_t *env, NSArray *items) {
+  int err;
+
+  js_value_t *array;
+  err = js_create_array_with_length(env, static_cast<size_t>(items.count), &array);
+  assert(err == 0);
+
+  for (uint32_t i = 0; i < items.count; i++) {
+    js_value_t *external;
+    err = js_create_external(env, const_cast<void *>(CFBridgingRetain(items[i])), bare_bluetooth_apple__on_bridged_release, NULL, &external);
+    assert(err == 0);
+
+    err = js_set_element(env, array, i, external);
+    assert(err == 0);
+  }
+
+  return array;
+}
 
 static void
 bare_bluetooth_apple_peripheral__on_services_discover(
@@ -385,13 +401,13 @@ bare_bluetooth_apple_peripheral__on_services_discover(
   err = js_get_reference_value(env, wrapper->ctx, &receiver);
   assert(err == 0);
 
-  uint32_t count = event->count;
-
   std::optional<std::string> error = std::move(event->error);
 
   delete event;
 
-  js_call_function(env, function, js_receiver_t(receiver), count, error);
+  js_value_t *services = bare_bluetooth_apple__bridged_array(env, error ? nil : wrapper->peripheral.services);
+
+  js_call_function(env, function, js_receiver_t(receiver), js_array_t(services), error);
 
   err = js_close_handle_scope(env, scope);
   assert(err == 0);
@@ -425,13 +441,13 @@ bare_bluetooth_apple_peripheral__on_characteristics_discover(
   err = js_create_external(env, const_cast<void *>(event->service), bare_bluetooth_apple__on_bridged_release, NULL, &service);
   assert(err == 0);
 
-  uint32_t count = event->count;
-
   std::optional<std::string> error = std::move(event->error);
+
+  js_value_t *characteristics = bare_bluetooth_apple__bridged_array(env, error ? nil : ((__bridge CBService *) event->service).characteristics);
 
   delete event;
 
-  js_call_function(env, function, js_receiver_t(receiver), js_object_t(service), count, error);
+  js_call_function(env, function, js_receiver_t(receiver), js_object_t(service), js_array_t(characteristics), error);
 
   err = js_close_handle_scope(env, scope);
   assert(err == 0);
@@ -1121,41 +1137,6 @@ bare_bluetooth_apple_peripheral_service_count(
   }
 }
 
-static js_external_t<CBService>
-bare_bluetooth_apple_peripheral_service_at_index(
-  js_env_t *env,
-  js_receiver_t,
-  js_external_t<BareBluetoothApplePeripheral> handle,
-  uint32_t index
-) {
-
-  @autoreleasepool {
-    BareBluetoothApplePeripheral *wrapper;
-    int err = js_get_value(env, handle, wrapper);
-    assert(err == 0);
-
-    js_external_t<CBService> result;
-
-    if (index >= wrapper->peripheral.services.count) {
-      err = js_throw_range_errorf(env, nullptr, "Service index %u is out of bounds for %lu service(s)", index, static_cast<unsigned long>(wrapper->peripheral.services.count));
-      assert(err == 0);
-      return result;
-    }
-
-    CBService *service = wrapper->peripheral.services[index];
-
-    err = js_create_external<bare_bluetooth_apple__release_bridged<CBService>>(
-      env,
-      static_cast<CBService *>(CFBridgingRetain(service)),
-      result
-    );
-
-    assert(err == 0);
-
-    return result;
-  }
-}
-
 static std::string
 bare_bluetooth_apple_service_key(
   js_env_t *env,
@@ -1251,40 +1232,6 @@ bare_bluetooth_apple_service_characteristic_count(
     assert(err == 0);
 
     return service.characteristics.count;
-  }
-}
-
-static js_external_t<CBCharacteristic>
-bare_bluetooth_apple_service_characteristic_at_index(
-  js_env_t *env,
-  js_receiver_t,
-  js_external_t<CBService> handle,
-  uint32_t index
-) {
-  @autoreleasepool {
-    CBService *service;
-    int err = js_get_value(env, handle, service);
-    assert(err == 0);
-
-    js_external_t<CBCharacteristic> result;
-
-    if (index >= service.characteristics.count) {
-      err = js_throw_range_errorf(env, nullptr, "Characteristic index %u is out of bounds for %lu characteristic(s)", index, static_cast<unsigned long>(service.characteristics.count));
-      assert(err == 0);
-      return result;
-    }
-
-    CBCharacteristic *characteristic = service.characteristics[index];
-
-    err = js_create_external<bare_bluetooth_apple__release_bridged<CBCharacteristic>>(
-      env,
-      static_cast<CBCharacteristic *>(CFBridgingRetain(characteristic)),
-      result
-    );
-
-    assert(err == 0);
-
-    return result;
   }
 }
 
@@ -3622,7 +3569,6 @@ bare_bluetooth_apple_exports(js_env_t *env, js_value_t *exports) {
   V("peripheralUnsubscribe", bare_bluetooth_apple_peripheral_unsubscribe)
   V("peripheralOpenL2CAPChannel", bare_bluetooth_apple_peripheral_open_l2cap_channel)
   V("peripheralServiceCount", bare_bluetooth_apple_peripheral_service_count)
-  V("peripheralServiceAtIndex", bare_bluetooth_apple_peripheral_service_at_index)
 
   // Service/Characteristic
   V("serviceKey", bare_bluetooth_apple_service_key)
@@ -3631,7 +3577,6 @@ bare_bluetooth_apple_exports(js_env_t *env, js_value_t *exports) {
   V("characteristicUuid", bare_bluetooth_apple_characteristic_uuid)
   V("characteristicProperties", bare_bluetooth_apple_characteristic_properties)
   V("serviceCharacteristicCount", bare_bluetooth_apple_service_characteristic_count)
-  V("serviceCharacteristicAtIndex", bare_bluetooth_apple_service_characteristic_at_index)
 
   // Request
   V("requestCharacteristicUuid", bare_bluetooth_apple_request_characteristic_uuid)
